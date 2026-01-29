@@ -1,0 +1,469 @@
+import { useEffect, useMemo, useRef, useState } from "react";
+import { motion, AnimatePresence } from "framer-motion";
+import { zones } from "../../data/zones";
+import { Store } from "../../state/store";
+import {
+  Wand2,
+  Activity,
+  MapPinned,
+  AlertTriangle,
+  CheckCircle2,
+  RefreshCw,
+  Server,
+  WifiOff
+} from "lucide-react";
+
+// ✅ Trim trailing slash to avoid //health issues
+const API_BASE_RAW = import.meta.env.VITE_ML_API_BASE || "http://localhost:8000";
+const API_BASE = API_BASE_RAW.replace(/\/+$/, "");
+
+function Card({ children }) {
+  return <div className="bg-white/5 border border-white/10 rounded-2xl p-5 shadow-glow">{children}</div>;
+}
+
+function Metric({ label, value, icon: Icon, tone }) {
+  const toneCls =
+    tone === "bad"
+      ? "text-red-300 bg-red-500/10 border-red-400/20"
+      : tone === "warn"
+      ? "text-amber-300 bg-amber-500/10 border-amber-400/20"
+      : "text-emerald-300 bg-emerald-500/10 border-emerald-400/20";
+
+  return (
+    <div className="bg-black/20 border border-white/10 rounded-2xl p-4">
+      <div className="flex items-center justify-between gap-3">
+        <div className="text-xs text-white/60">{label}</div>
+        <div className={`px-2.5 py-1 rounded-full border text-xs flex items-center gap-1 ${toneCls}`}>
+          <Icon size={14} />
+          {value}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Range({ label, value, onChange, min, max, suffix }) {
+  return (
+    <div className="bg-black/20 border border-white/10 rounded-2xl p-4">
+      <div className="flex items-center justify-between">
+        <div className="text-xs text-white/60">{label}</div>
+        <div className="text-xs text-white/75 font-medium">
+          {value}
+          {suffix}
+        </div>
+      </div>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        value={value}
+        onChange={(e) => onChange(Number(e.target.value))}
+        className="w-full mt-2 accent-cyan-400"
+      />
+    </div>
+  );
+}
+
+function toApiScenario(s) {
+  return {
+    disaster_type: s.disasterType,
+    severity: s.severity,
+    rainfall_mm: s.rainfallMm,
+    wind_kmph: s.windKmph,
+    time_of_day: s.timeOfDay,
+    mobility_impact: s.mobilityImpact
+  };
+}
+
+function toApiZones(zs) {
+  return zs.map((z) => ({
+    id: z.id,
+    name: z.name,
+    lat: z.lat,
+    lng: z.lng,
+    population: z.population,
+    elderly_pct: z.elderlyPct,
+    poverty_pct: z.povertyPct,
+    past_incidents: z.pastIncidents,
+    elevation_m: z.elevationM,
+    hospital_km: z.hospitalKm,
+    road_density: z.roadDensity ?? 0.6,
+    transport_access: z.transportAccess ?? 0.6
+  }));
+}
+
+function toApiShelters(ss) {
+  return ss.map((s) => ({
+    id: s.id,
+    name: s.name,
+    lat: s.lat,
+    lng: s.lng,
+    risk: (s.risk || "LOW").toUpperCase(),
+    capacity_total: s.capacityTotal,
+    capacity_used: s.capacityUsed
+  }));
+}
+
+// ✅ Better error message helper
+async function readErrorBody(res) {
+  try {
+    const text = await res.text();
+    return text?.slice(0, 500) || "";
+  } catch {
+    return "";
+  }
+}
+
+export default function Optimizer() {
+  const shelters = Store.shelters();
+
+  const [scenario, setScenario] = useState({
+    disasterType: "FLOOD",
+    severity: 70,
+    rainfallMm: 120,
+    windKmph: 35,
+    timeOfDay: "DAY",
+    mobilityImpact: 35
+  });
+
+  const [online, setOnline] = useState(navigator.onLine);
+  const [health, setHealth] = useState({ ok: false, checked: false });
+
+  const [demand, setDemand] = useState([]);
+  const [allocation, setAllocation] = useState(null);
+
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState("");
+
+  const tone = useMemo(() => {
+    if (!allocation) return "good";
+    const u = allocation.total_unserved || 0;
+    return u > 2000 ? "bad" : u > 0 ? "warn" : "good";
+  }, [allocation]);
+
+  useEffect(() => {
+    const on = () => setOnline(true);
+    const off = () => setOnline(false);
+    window.addEventListener("online", on);
+    window.addEventListener("offline", off);
+    return () => {
+      window.removeEventListener("online", on);
+      window.removeEventListener("offline", off);
+    };
+  }, []);
+
+  async function ping() {
+    try {
+      const r = await fetch(`${API_BASE}/health`);
+      const j = await r.json();
+      setHealth({ ok: !!j?.ok, checked: true });
+    } catch {
+      setHealth({ ok: false, checked: true });
+    }
+  }
+
+  useEffect(() => {
+    ping();
+  }, []);
+
+  // ✅ Debounce optimization when sliders move
+  const debounceRef = useRef(null);
+
+  async function runOptimizer() {
+    setErr("");
+    setLoading(true);
+
+    // always refresh health when we run
+    ping();
+
+    try {
+      // 1) predict
+      const predRes = await fetch(`${API_BASE}/predict-demand`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          scenario: toApiScenario(scenario),
+          zones: toApiZones(zones)
+        })
+      });
+
+      if (!predRes.ok) {
+        const body = await readErrorBody(predRes);
+        throw new Error(`Predict API failed (${predRes.status}). ${body}`);
+      }
+
+      const pred = await predRes.json();
+      const demandList = pred?.demand || [];
+      setDemand(demandList);
+
+      // 2) allocate
+      const allocRes = await fetch(`${API_BASE}/allocate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          scenario: toApiScenario(scenario),
+          zones: toApiZones(zones),
+          shelters: toApiShelters(shelters),
+          demand: demandList
+        })
+      });
+
+      if (!allocRes.ok) {
+        const body = await readErrorBody(allocRes);
+        throw new Error(`Allocate API failed (${allocRes.status}). ${body}`);
+      }
+
+      const alloc = await allocRes.json();
+      setAllocation(alloc);
+    } catch (e) {
+      setErr(e?.message || "Something went wrong.");
+      setAllocation(null);
+      setDemand([]);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // ✅ Auto-run with debounce instead of firing on every slider tick instantly
+  useEffect(() => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => runOptimizer(), 500);
+    return () => clearTimeout(debounceRef.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    scenario.disasterType,
+    scenario.severity,
+    scenario.rainfallMm,
+    scenario.windKmph,
+    scenario.timeOfDay,
+    scenario.mobilityImpact,
+    shelters.length
+  ]);
+
+  const totalDemand = allocation?.total_demand ?? demand.reduce((a, b) => a + (b.demand || 0), 0);
+  const totalAssigned = allocation?.total_assigned ?? 0;
+  const avgTravel = allocation?.avg_travel_time_min ?? 0;
+  const totalUnserved = allocation?.total_unserved ?? 0;
+
+  return (
+    <div className="max-w-7xl mx-auto px-4 py-8">
+      <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
+        <div className="flex items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-2xl bg-cyan-500/20 border border-cyan-400/20 flex items-center justify-center">
+              <Wand2 className="text-cyan-200" />
+            </div>
+            <div>
+              <div className="text-2xl font-semibold">Allocation Optimizer</div>
+              <div className="text-sm text-white/60">
+                ML demand prediction + allocation strategy under capacity + travel constraints.
+              </div>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <div
+              className={`px-3 py-2 rounded-xl text-sm border flex items-center gap-2 ${
+                health.ok
+                  ? "bg-emerald-500/10 border-emerald-400/20 text-emerald-200"
+                  : "bg-red-500/10 border-red-400/20 text-red-200"
+              }`}
+              title={API_BASE}
+            >
+              <Server size={16} />
+              {health.checked ? (health.ok ? "API Online" : "API Offline") : "Checking..."}
+            </div>
+
+            <button
+              onClick={() => {
+                ping();
+                runOptimizer();
+              }}
+              className="px-3 py-2 rounded-xl text-sm border bg-white/5 hover:bg-white/10 border-white/10 flex items-center gap-2"
+            >
+              <RefreshCw size={16} />
+              Refresh
+            </button>
+          </div>
+        </div>
+
+        <AnimatePresence>
+          {!online && (
+            <motion.div
+              initial={{ y: -8, opacity: 0 }}
+              animate={{ y: 0, opacity: 1 }}
+              exit={{ y: -8, opacity: 0 }}
+              className="mt-4"
+            >
+              <div className="bg-orange-500/10 border border-orange-400/20 text-orange-200 rounded-2xl px-4 py-3 flex items-center gap-2">
+                <WifiOff size={18} />
+                <span className="text-sm">You are offline. ML API calls may fail until connectivity returns.</span>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        <div className="mt-6 grid lg:grid-cols-[420px_1fr] gap-6">
+          <Card>
+            <div className="text-sm font-semibold mb-3 flex items-center gap-2">
+              <Activity size={16} className="text-cyan-300" />
+              Scenario Inputs
+            </div>
+
+            <div className="space-y-3">
+              <div className="grid grid-cols-2 gap-2">
+                <select
+                  className="bg-black/30 border border-white/10 rounded-xl px-3 py-2 outline-none text-sm"
+                  value={scenario.disasterType}
+                  onChange={(e) => setScenario((p) => ({ ...p, disasterType: e.target.value }))}
+                >
+                  <option value="FLOOD">Flood</option>
+                  <option value="CYCLONE">Cyclone</option>
+                  <option value="FIRE">Fire</option>
+                  <option value="EARTHQUAKE">Earthquake</option>
+                </select>
+
+                <select
+                  className="bg-black/30 border border-white/10 rounded-xl px-3 py-2 outline-none text-sm"
+                  value={scenario.timeOfDay}
+                  onChange={(e) => setScenario((p) => ({ ...p, timeOfDay: e.target.value }))}
+                >
+                  <option value="DAY">Day</option>
+                  <option value="NIGHT">Night</option>
+                </select>
+              </div>
+
+              <Range label="Severity" value={scenario.severity} onChange={(v) => setScenario((p) => ({ ...p, severity: v }))} min={0} max={100} suffix="%" />
+              <Range label="Rainfall" value={scenario.rainfallMm} onChange={(v) => setScenario((p) => ({ ...p, rainfallMm: v }))} min={0} max={250} suffix="mm" />
+              <Range label="Wind" value={scenario.windKmph} onChange={(v) => setScenario((p) => ({ ...p, windKmph: v }))} min={0} max={140} suffix="km/h" />
+              <Range label="Mobility Impact" value={scenario.mobilityImpact} onChange={(v) => setScenario((p) => ({ ...p, mobilityImpact: v }))} min={0} max={80} suffix="%" />
+            </div>
+
+            <div className="mt-5 grid grid-cols-2 gap-3">
+              <Metric label="Avg Travel Time" value={loading ? "…" : `${avgTravel} min`} icon={MapPinned} tone="good" />
+              <Metric
+                label="Unserved Demand"
+                value={loading ? "…" : `${totalUnserved}`}
+                icon={tone === "good" ? CheckCircle2 : AlertTriangle}
+                tone={tone}
+              />
+            </div>
+
+            <div className="mt-4 grid grid-cols-2 gap-3">
+              <Metric label="Total Demand" value={loading ? "…" : `${totalDemand}`} icon={Activity} tone="good" />
+              <Metric label="Assigned" value={loading ? "…" : `${totalAssigned}`} icon={CheckCircle2} tone={totalAssigned > 0 ? "good" : "warn"} />
+            </div>
+
+            <AnimatePresence>
+              {err && (
+                <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 6 }} className="mt-4">
+                  <div className="bg-red-500/10 border border-red-400/20 text-red-200 rounded-2xl px-4 py-3 text-sm">
+                    {err}
+                    <div className="mt-2 text-xs text-white/60">API: {API_BASE}</div>
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
+            <div className="mt-4">
+              <button
+                disabled={loading}
+                onClick={runOptimizer}
+                className={`w-full px-4 py-3 rounded-2xl text-sm font-medium border flex items-center justify-center gap-2 ${
+                  loading
+                    ? "bg-white/5 border-white/10 text-white/50 cursor-not-allowed"
+                    : "bg-cyan-500/15 border-cyan-400/20 hover:bg-cyan-500/20 text-cyan-100"
+                }`}
+              >
+                <Wand2 size={16} />
+                {loading ? "Running…" : "Run Optimization"}
+              </button>
+              <div className="mt-2 text-xs text-white/50">Uses backend ML model for demand prediction + server-side allocation.</div>
+            </div>
+          </Card>
+
+          <div className="space-y-6">
+            <Card>
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <div className="text-sm font-semibold">Demand Forecast by Zone</div>
+                  <div className="text-xs text-white/55">Predicted evac demand generated by trained ML model.</div>
+                </div>
+                <div className="text-xs text-white/55">
+                  Total Demand: <span className="text-white/80 font-semibold">{loading ? "…" : totalDemand}</span>
+                </div>
+              </div>
+
+              <div className="mt-4 grid md:grid-cols-2 gap-3">
+                {(demand || []).map((d) => (
+                  <div key={d.zone_id} className="bg-black/20 border border-white/10 rounded-2xl p-4">
+                    <div className="flex items-center justify-between">
+                      <div className="font-medium">{d.zone_name}</div>
+                      <div className="text-sm font-semibold text-cyan-200">{d.demand}</div>
+                    </div>
+                    <div className="mt-2 text-xs text-white/55">
+                      Zone ID: <span className="text-white/75">{d.zone_id}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </Card>
+
+            <Card>
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <div className="text-sm font-semibold">Recommended Allocation</div>
+                  <div className="text-xs text-white/55">Allocation computed on backend with capacity constraints.</div>
+                </div>
+                <div className="text-xs text-white/55">
+                  Assigned: <span className="text-white/80 font-semibold">{loading ? "…" : totalAssigned}</span>
+                </div>
+              </div>
+
+              <div className="mt-4 overflow-auto">
+                <table className="w-full text-sm">
+                  <thead className="text-white/60">
+                    <tr className="border-b border-white/10">
+                      <th className="text-left py-2 pr-3">Zone</th>
+                      <th className="text-left py-2 pr-3">Shelter</th>
+                      <th className="text-right py-2 pr-3">People</th>
+                      <th className="text-right py-2 pr-3">Time</th>
+                      <th className="text-right py-2">Dist</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(allocation?.assigned || []).slice(0, 18).map((a, idx) => (
+                      <tr key={`${a.zone_id || a.zone_name}-${a.shelter_id || a.shelter_name}-${idx}`} className="border-b border-white/5">
+                        <td className="py-2 pr-3">{a.zone_name}</td>
+                        <td className="py-2 pr-3">{a.shelter_name}</td>
+                        <td className="py-2 pr-3 text-right font-semibold">{a.people}</td>
+                        <td className="py-2 pr-3 text-right text-white/70">{a.time_min}m</td>
+                        <td className="py-2 text-right text-white/70">{a.dist_km}km</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              {(allocation?.unserved || []).length > 0 && (
+                <div className="mt-4 bg-amber-500/10 border border-amber-400/20 rounded-2xl p-4">
+                  <div className="text-sm font-semibold text-amber-200">Unserved Zones</div>
+                  <div className="mt-2 grid md:grid-cols-2 gap-2 text-sm">
+                    {allocation.unserved.map((u) => (
+                      <div key={u.zone_id} className="bg-black/20 border border-white/10 rounded-xl px-3 py-2 flex items-center justify-between">
+                        <span className="text-white/80">{u.zone_name}</span>
+                        <span className="text-amber-200 font-semibold">{u.demand}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              <div className="mt-4 text-xs text-white/50">Next upgrade: min-cost flow (exact) + routing engine (OSRM) for travel times.</div>
+            </Card>
+          </div>
+        </div>
+      </motion.div>
+    </div>
+  );
+}

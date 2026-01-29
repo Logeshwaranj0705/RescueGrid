@@ -1,0 +1,32 @@
+export const shelters = [
+  {
+    id: 1,
+    name: "Government High School",
+    lat: 13.0827,
+    lng: 80.2707,
+    capacityTotal: 800,
+    capacityUsed: 560,
+    risk: "LOW",
+    resources: ["Food", "Water", "Medical"],
+  },
+  {
+    id: 2,
+    name: "Community Hall – Zone 4",
+    lat: 13.0727,
+    lng: 80.2507,
+    capacityTotal: 500,
+    capacityUsed: 480,
+    risk: "HIGH",
+    resources: ["Water"],
+  },
+  {
+    id: 3,
+    name: "Metro Shelter Hub",
+    lat: 13.0927,
+    lng: 80.2907,
+    capacityTotal: 1200,
+    capacityUsed: 300,
+    risk: "MODERATE",
+    resources: ["Food", "Water"],
+  },
+];

@@ -7,19 +7,23 @@ export default defineConfig({
     react(),
     VitePWA({
       registerType: "autoUpdate",
-      includeAssets: ["favicon.svg", "robots.txt"],
+      includeAssets: ["favicon.svg"],
       manifest: {
-        name: "ShelterFlow",
-        short_name: "ShelterFlow",
-        description: "Offline-first disaster shelter allocation PWA",
-        theme_color: "#0b1220",
-        background_color: "#0b1220",
+        name: "RescueGrid",
+        short_name: "RescueGrid",
+        description: "Localized Disaster Shelter Allocation Intelligence",
+        theme_color: "#050814",
+        background_color: "#050814",
         display: "standalone",
+        start_url: "/",
         icons: [
-          { src: "pwa-192.png", sizes: "192x192", type: "image/png" },
-          { src: "pwa-512.png", sizes: "512x512", type: "image/png" }
-        ]
-      }
-    })
-  ]
+          { src: "favicon.svg", sizes: "192x192", type: "image/svg+xml" },
+          { src: "favicon.svg", sizes: "512x512", type: "image/svg+xml" },
+        ],
+      },
+      workbox: {
+        navigateFallback: "/index.html",
+      },
+    }),
+  ],
 });

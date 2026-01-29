@@ -1,21 +1,14 @@
-import React, { useState } from "react";
-import { motion, AnimatePresence } from "framer-motion";
-import { db } from "../db/indexedDb.js";
+import { AnimatePresence, motion } from "framer-motion";
+import { useState } from "react";
 
-export default function ReportModal({ open, onClose, shelter }) {
+export default function Modal({ open, title, subtitle, placeholder, onClose, onSubmit, submitLabel }) {
   const [msg, setMsg] = useState("");
 
-  async function submit() {
+  const submit = async () => {
     if (!msg.trim()) return;
-    await db.reports.add({
-      shelterId: shelter?.id || "unknown",
-      message: msg.trim(),
-      createdAt: Date.now()
-    });
+    await onSubmit(msg.trim());
     setMsg("");
-    onClose();
-    alert("✅ Report saved locally (sync later).");
-  }
+  };
 
   return (
     <AnimatePresence>
@@ -34,30 +27,22 @@ export default function ReportModal({ open, onClose, shelter }) {
             exit={{ y: 20, scale: 0.98, opacity: 0 }}
             onMouseDown={(e) => e.stopPropagation()}
           >
-            <div className="text-lg font-semibold">Report an Issue</div>
-            <div className="text-xs text-white/60 mt-1">
-              Shelter: <span className="text-white/80">{shelter?.name}</span>
-            </div>
+            <div className="text-lg font-semibold">{title}</div>
+            {subtitle && <div className="text-xs text-white/60 mt-1">{subtitle}</div>}
 
             <textarea
               value={msg}
               onChange={(e) => setMsg(e.target.value)}
-              placeholder="Road blocked, shelter damaged, medicine shortage..."
+              placeholder={placeholder}
               className="mt-3 w-full min-h-[120px] bg-black/20 border border-white/10 rounded-xl p-3 text-sm outline-none"
             />
 
             <div className="mt-4 flex gap-2">
-              <button
-                onClick={onClose}
-                className="flex-1 bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl px-3 py-2 text-sm"
-              >
+              <button onClick={onClose} className="flex-1 bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl px-3 py-2 text-sm">
                 Cancel
               </button>
-              <button
-                onClick={submit}
-                className="flex-1 bg-emerald-500/15 hover:bg-emerald-500/20 border border-emerald-400/20 rounded-xl px-3 py-2 text-sm text-emerald-100"
-              >
-                Save Report
+              <button onClick={submit} className="flex-1 bg-cyan-500/15 hover:bg-cyan-500/20 border border-cyan-400/20 rounded-xl px-3 py-2 text-sm text-cyan-100">
+                {submitLabel || "Submit"}
               </button>
             </div>
           </motion.div>
