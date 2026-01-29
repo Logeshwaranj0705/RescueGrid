@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { zones } from "../../data/zones";
-import { Store } from "../../state/store";
+import { zones as zonesStatic } from "../../data/zones";
 import {
   Wand2,
   Activity,
@@ -10,15 +9,41 @@ import {
   CheckCircle2,
   RefreshCw,
   Server,
-  WifiOff
+  WifiOff,
 } from "lucide-react";
 
-// ✅ Trim trailing slash to avoid //health issues
 const API_BASE_RAW = import.meta.env.VITE_ML_API_BASE || "http://localhost:8000";
 const API_BASE = API_BASE_RAW.replace(/\/+$/, "");
 
-function Card({ children }) {
-  return <div className="bg-white/5 border border-white/10 rounded-2xl p-5 shadow-glow">{children}</div>;
+function Card({ children, className = "" }) {
+  return (
+    <div
+      className={`rounded-3xl bg-white/5 border border-white/10 backdrop-blur shadow-glow ${className}`}
+    >
+      {children}
+    </div>
+  );
+}
+
+function Pill({ tone = "neutral", icon: Icon, children, title }) {
+  const cls =
+    tone === "good"
+      ? "bg-emerald-500/10 border-emerald-400/20 text-emerald-200"
+      : tone === "bad"
+      ? "bg-red-500/10 border-red-400/20 text-red-200"
+      : tone === "warn"
+      ? "bg-amber-500/10 border-amber-400/20 text-amber-200"
+      : "bg-white/5 border-white/10 text-white/70";
+
+  return (
+    <div
+      title={title}
+      className={`px-3 py-2 rounded-2xl border text-sm flex items-center gap-2 ${cls}`}
+    >
+      {Icon && <Icon size={16} />}
+      {children}
+    </div>
+  );
 }
 
 function Metric({ label, value, icon: Icon, tone }) {
@@ -30,7 +55,7 @@ function Metric({ label, value, icon: Icon, tone }) {
       : "text-emerald-300 bg-emerald-500/10 border-emerald-400/20";
 
   return (
-    <div className="bg-black/20 border border-white/10 rounded-2xl p-4">
+    <div className="bg-black/25 border border-white/10 rounded-2xl p-4">
       <div className="flex items-center justify-between gap-3">
         <div className="text-xs text-white/60">{label}</div>
         <div className={`px-2.5 py-1 rounded-full border text-xs flex items-center gap-1 ${toneCls}`}>
@@ -44,10 +69,10 @@ function Metric({ label, value, icon: Icon, tone }) {
 
 function Range({ label, value, onChange, min, max, suffix }) {
   return (
-    <div className="bg-black/20 border border-white/10 rounded-2xl p-4">
+    <div className="bg-black/25 border border-white/10 rounded-2xl p-4">
       <div className="flex items-center justify-between">
         <div className="text-xs text-white/60">{label}</div>
-        <div className="text-xs text-white/75 font-medium">
+        <div className="text-xs text-white/80 font-medium">
           {value}
           {suffix}
         </div>
@@ -58,7 +83,7 @@ function Range({ label, value, onChange, min, max, suffix }) {
         max={max}
         value={value}
         onChange={(e) => onChange(Number(e.target.value))}
-        className="w-full mt-2 accent-cyan-400"
+        className="w-full mt-3 accent-cyan-400"
       />
     </div>
   );
@@ -71,7 +96,7 @@ function toApiScenario(s) {
     rainfall_mm: s.rainfallMm,
     wind_kmph: s.windKmph,
     time_of_day: s.timeOfDay,
-    mobility_impact: s.mobilityImpact
+    mobility_impact: s.mobilityImpact,
   };
 }
 
@@ -82,13 +107,13 @@ function toApiZones(zs) {
     lat: z.lat,
     lng: z.lng,
     population: z.population,
-    elderly_pct: z.elderlyPct,
-    poverty_pct: z.povertyPct,
-    past_incidents: z.pastIncidents,
-    elevation_m: z.elevationM,
-    hospital_km: z.hospitalKm,
-    road_density: z.roadDensity ?? 0.6,
-    transport_access: z.transportAccess ?? 0.6
+    elderly_pct: z.elderly_pct ?? z.elderlyPct,
+    poverty_pct: z.poverty_pct ?? z.povertyPct,
+    past_incidents: z.past_incidents ?? z.pastIncidents,
+    elevation_m: z.elevation_m ?? z.elevationM,
+    hospital_km: z.hospital_km ?? z.hospitalKm,
+    road_density: z.road_density ?? z.roadDensity ?? 0.6,
+    transport_access: z.transport_access ?? z.transportAccess ?? 0.6,
   }));
 }
 
@@ -99,12 +124,13 @@ function toApiShelters(ss) {
     lat: s.lat,
     lng: s.lng,
     risk: (s.risk || "LOW").toUpperCase(),
-    capacity_total: s.capacityTotal,
-    capacity_used: s.capacityUsed
+    capacity_total: s.capacity_total ?? s.capacityTotal,
+    capacity_used: s.capacity_used ?? s.capacityUsed,
+    type: s.type,
+    resources: s.resources,
   }));
 }
 
-// ✅ Better error message helper
 async function readErrorBody(res) {
   try {
     const text = await res.text();
@@ -115,19 +141,20 @@ async function readErrorBody(res) {
 }
 
 export default function Optimizer() {
-  const shelters = Store.shelters();
-
   const [scenario, setScenario] = useState({
     disasterType: "FLOOD",
     severity: 70,
     rainfallMm: 120,
     windKmph: 35,
     timeOfDay: "DAY",
-    mobilityImpact: 35
+    mobilityImpact: 35,
   });
 
   const [online, setOnline] = useState(navigator.onLine);
   const [health, setHealth] = useState({ ok: false, checked: false });
+
+  const [zones] = useState(zonesStatic);
+  const [shelters, setShelters] = useState([]);
 
   const [demand, setDemand] = useState([]);
   const [allocation, setAllocation] = useState(null);
@@ -136,8 +163,7 @@ export default function Optimizer() {
   const [err, setErr] = useState("");
 
   const tone = useMemo(() => {
-    if (!allocation) return "good";
-    const u = allocation.total_unserved || 0;
+    const u = allocation?.total_unserved || 0;
     return u > 2000 ? "bad" : u > 0 ? "warn" : "good";
   }, [allocation]);
 
@@ -162,29 +188,36 @@ export default function Optimizer() {
     }
   }
 
+  async function loadShelters() {
+    const r = await fetch(`${API_BASE}/shelters`);
+    if (!r.ok) throw new Error(`GET /shelters failed (${r.status})`);
+    const j = await r.json();
+    setShelters(j?.shelters || []);
+  }
+
   useEffect(() => {
     ping();
+    loadShelters().catch((e) => setErr(e?.message || "Failed to load shelters"));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ✅ Debounce optimization when sliders move
   const debounceRef = useRef(null);
 
   async function runOptimizer() {
     setErr("");
     setLoading(true);
-
-    // always refresh health when we run
     ping();
 
     try {
-      // 1) predict
+      if (!shelters.length) await loadShelters();
+
       const predRes = await fetch(`${API_BASE}/predict-demand`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           scenario: toApiScenario(scenario),
-          zones: toApiZones(zones)
-        })
+          zones: toApiZones(zones),
+        }),
       });
 
       if (!predRes.ok) {
@@ -196,7 +229,6 @@ export default function Optimizer() {
       const demandList = pred?.demand || [];
       setDemand(demandList);
 
-      // 2) allocate
       const allocRes = await fetch(`${API_BASE}/allocate`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -204,8 +236,8 @@ export default function Optimizer() {
           scenario: toApiScenario(scenario),
           zones: toApiZones(zones),
           shelters: toApiShelters(shelters),
-          demand: demandList
-        })
+          demand: demandList,
+        }),
       });
 
       if (!allocRes.ok) {
@@ -224,7 +256,6 @@ export default function Optimizer() {
     }
   }
 
-  // ✅ Auto-run with debounce instead of firing on every slider tick instantly
   useEffect(() => {
     if (debounceRef.current) clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(() => runOptimizer(), 500);
@@ -237,49 +268,55 @@ export default function Optimizer() {
     scenario.windKmph,
     scenario.timeOfDay,
     scenario.mobilityImpact,
-    shelters.length
+    shelters.length,
   ]);
 
-  const totalDemand = allocation?.total_demand ?? demand.reduce((a, b) => a + (b.demand || 0), 0);
+  const totalDemand =
+    allocation?.total_demand ?? demand.reduce((a, b) => a + (b.demand || 0), 0);
   const totalAssigned = allocation?.total_assigned ?? 0;
   const avgTravel = allocation?.avg_travel_time_min ?? 0;
   const totalUnserved = allocation?.total_unserved ?? 0;
 
   return (
-    <div className="max-w-7xl mx-auto px-4 py-8">
-      <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
-        <div className="flex items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-2xl bg-cyan-500/20 border border-cyan-400/20 flex items-center justify-center">
-              <Wand2 className="text-cyan-200" />
+    <div className="w-full">
+      <motion.div
+        initial={{ opacity: 0, y: 10 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="mx-auto max-w-[1400px] px-4 md:px-6 lg:px-8 py-8"
+      >
+        {/* Header */}
+        <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+          <div className="flex items-start gap-3">
+            <div className="w-11 h-11 rounded-3xl bg-cyan-500/15 border border-cyan-400/20 flex items-center justify-center shadow-glow">
+              <Wand2 className="text-cyan-200" size={18} />
             </div>
             <div>
-              <div className="text-2xl font-semibold">Allocation Optimizer</div>
-              <div className="text-sm text-white/60">
-                ML demand prediction + allocation strategy under capacity + travel constraints.
+              <div className="text-3xl font-semibold tracking-tight">Allocation Optimizer</div>
+              <div className="text-sm text-white/60 mt-1">
+                Demand prediction + allocation strategy under capacity and travel constraints.
               </div>
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
-            <div
-              className={`px-3 py-2 rounded-xl text-sm border flex items-center gap-2 ${
-                health.ok
-                  ? "bg-emerald-500/10 border-emerald-400/20 text-emerald-200"
-                  : "bg-red-500/10 border-red-400/20 text-red-200"
-              }`}
+          <div className="flex flex-wrap items-center gap-2">
+            <Pill
+              tone={health.checked ? (health.ok ? "good" : "bad") : "neutral"}
+              icon={Server}
               title={API_BASE}
             >
-              <Server size={16} />
-              {health.checked ? (health.ok ? "API Online" : "API Offline") : "Checking..."}
-            </div>
+              {health.checked ? (health.ok ? "API Online" : "API Offline") : "Checking…"}
+            </Pill>
+
+            <Pill tone={online ? "good" : "warn"} icon={online ? CheckCircle2 : WifiOff}>
+              {online ? "Online" : "Offline"}
+            </Pill>
 
             <button
               onClick={() => {
                 ping();
-                runOptimizer();
+                loadShelters().then(runOptimizer);
               }}
-              className="px-3 py-2 rounded-xl text-sm border bg-white/5 hover:bg-white/10 border-white/10 flex items-center gap-2"
+              className="px-4 py-2 rounded-2xl text-sm border bg-white/5 hover:bg-white/10 border-white/10 flex items-center gap-2"
             >
               <RefreshCw size={16} />
               Refresh
@@ -293,27 +330,37 @@ export default function Optimizer() {
               initial={{ y: -8, opacity: 0 }}
               animate={{ y: 0, opacity: 1 }}
               exit={{ y: -8, opacity: 0 }}
-              className="mt-4"
+              className="mt-5"
             >
-              <div className="bg-orange-500/10 border border-orange-400/20 text-orange-200 rounded-2xl px-4 py-3 flex items-center gap-2">
+              <div className="bg-orange-500/10 border border-orange-400/20 text-orange-200 rounded-3xl px-5 py-4 flex items-center gap-2">
                 <WifiOff size={18} />
-                <span className="text-sm">You are offline. ML API calls may fail until connectivity returns.</span>
+                <span className="text-sm">
+                  You are offline. ML API calls may fail until connectivity returns.
+                </span>
               </div>
             </motion.div>
           )}
         </AnimatePresence>
 
-        <div className="mt-6 grid lg:grid-cols-[420px_1fr] gap-6">
-          <Card>
-            <div className="text-sm font-semibold mb-3 flex items-center gap-2">
-              <Activity size={16} className="text-cyan-300" />
-              Scenario Inputs
+        {/* Main Grid */}
+        <div className="mt-6 grid gap-6 lg:grid-cols-[460px_1fr]">
+          {/* Left: Scenario + Metrics */}
+          <Card className="p-5 md:p-6">
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-2">
+                <Activity size={16} className="text-cyan-300" />
+                <div className="font-semibold">Scenario Inputs</div>
+              </div>
+              <div className="text-xs text-white/50">
+                Zones: <span className="text-white/80 font-semibold">{zones.length}</span> • Shelters:{" "}
+                <span className="text-white/80 font-semibold">{shelters.length}</span>
+              </div>
             </div>
 
             <div className="space-y-3">
-              <div className="grid grid-cols-2 gap-2">
+              <div className="grid grid-cols-2 gap-3">
                 <select
-                  className="bg-black/30 border border-white/10 rounded-xl px-3 py-2 outline-none text-sm"
+                  className="bg-black/30 border border-white/10 rounded-2xl px-3 py-2 outline-none text-sm"
                   value={scenario.disasterType}
                   onChange={(e) => setScenario((p) => ({ ...p, disasterType: e.target.value }))}
                 >
@@ -324,7 +371,7 @@ export default function Optimizer() {
                 </select>
 
                 <select
-                  className="bg-black/30 border border-white/10 rounded-xl px-3 py-2 outline-none text-sm"
+                  className="bg-black/30 border border-white/10 rounded-2xl px-3 py-2 outline-none text-sm"
                   value={scenario.timeOfDay}
                   onChange={(e) => setScenario((p) => ({ ...p, timeOfDay: e.target.value }))}
                 >
@@ -333,31 +380,76 @@ export default function Optimizer() {
                 </select>
               </div>
 
-              <Range label="Severity" value={scenario.severity} onChange={(v) => setScenario((p) => ({ ...p, severity: v }))} min={0} max={100} suffix="%" />
-              <Range label="Rainfall" value={scenario.rainfallMm} onChange={(v) => setScenario((p) => ({ ...p, rainfallMm: v }))} min={0} max={250} suffix="mm" />
-              <Range label="Wind" value={scenario.windKmph} onChange={(v) => setScenario((p) => ({ ...p, windKmph: v }))} min={0} max={140} suffix="km/h" />
-              <Range label="Mobility Impact" value={scenario.mobilityImpact} onChange={(v) => setScenario((p) => ({ ...p, mobilityImpact: v }))} min={0} max={80} suffix="%" />
+              <Range
+                label="Severity"
+                value={scenario.severity}
+                onChange={(v) => setScenario((p) => ({ ...p, severity: v }))}
+                min={0}
+                max={100}
+                suffix="%"
+              />
+              <Range
+                label="Rainfall"
+                value={scenario.rainfallMm}
+                onChange={(v) => setScenario((p) => ({ ...p, rainfallMm: v }))}
+                min={0}
+                max={250}
+                suffix="mm"
+              />
+              <Range
+                label="Wind"
+                value={scenario.windKmph}
+                onChange={(v) => setScenario((p) => ({ ...p, windKmph: v }))}
+                min={0}
+                max={140}
+                suffix="km/h"
+              />
+              <Range
+                label="Mobility Impact"
+                value={scenario.mobilityImpact}
+                onChange={(v) => setScenario((p) => ({ ...p, mobilityImpact: v }))}
+                min={0}
+                max={80}
+                suffix="%"
+              />
             </div>
 
             <div className="mt-5 grid grid-cols-2 gap-3">
-              <Metric label="Avg Travel Time" value={loading ? "…" : `${avgTravel} min`} icon={MapPinned} tone="good" />
+              <Metric
+                label="Avg Travel Time"
+                value={loading ? "…" : `${avgTravel} min`}
+                icon={MapPinned}
+                tone="good"
+              />
               <Metric
                 label="Unserved Demand"
                 value={loading ? "…" : `${totalUnserved}`}
                 icon={tone === "good" ? CheckCircle2 : AlertTriangle}
                 tone={tone}
               />
-            </div>
-
-            <div className="mt-4 grid grid-cols-2 gap-3">
-              <Metric label="Total Demand" value={loading ? "…" : `${totalDemand}`} icon={Activity} tone="good" />
-              <Metric label="Assigned" value={loading ? "…" : `${totalAssigned}`} icon={CheckCircle2} tone={totalAssigned > 0 ? "good" : "warn"} />
+              <Metric
+                label="Total Demand"
+                value={loading ? "…" : `${totalDemand}`}
+                icon={Activity}
+                tone="good"
+              />
+              <Metric
+                label="Assigned"
+                value={loading ? "…" : `${totalAssigned}`}
+                icon={CheckCircle2}
+                tone={totalAssigned > 0 ? "good" : "warn"}
+              />
             </div>
 
             <AnimatePresence>
               {err && (
-                <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 6 }} className="mt-4">
-                  <div className="bg-red-500/10 border border-red-400/20 text-red-200 rounded-2xl px-4 py-3 text-sm">
+                <motion.div
+                  initial={{ opacity: 0, y: 6 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: 6 }}
+                  className="mt-5"
+                >
+                  <div className="bg-red-500/10 border border-red-400/20 text-red-200 rounded-3xl px-5 py-4 text-sm">
                     {err}
                     <div className="mt-2 text-xs text-white/60">API: {API_BASE}</div>
                   </div>
@@ -365,62 +457,73 @@ export default function Optimizer() {
               )}
             </AnimatePresence>
 
-            <div className="mt-4">
-              <button
-                disabled={loading}
-                onClick={runOptimizer}
-                className={`w-full px-4 py-3 rounded-2xl text-sm font-medium border flex items-center justify-center gap-2 ${
-                  loading
-                    ? "bg-white/5 border-white/10 text-white/50 cursor-not-allowed"
-                    : "bg-cyan-500/15 border-cyan-400/20 hover:bg-cyan-500/20 text-cyan-100"
-                }`}
-              >
-                <Wand2 size={16} />
-                {loading ? "Running…" : "Run Optimization"}
-              </button>
-              <div className="mt-2 text-xs text-white/50">Uses backend ML model for demand prediction + server-side allocation.</div>
-            </div>
+            <button
+              disabled={loading}
+              onClick={runOptimizer}
+              className={`mt-5 w-full px-4 py-3 rounded-2xl text-sm font-medium border flex items-center justify-center gap-2 ${
+                loading
+                  ? "bg-white/5 border-white/10 text-white/50 cursor-not-allowed"
+                  : "bg-cyan-500/15 border-cyan-400/20 hover:bg-cyan-500/20 text-cyan-100"
+              }`}
+            >
+              <Wand2 size={16} />
+              {loading ? "Running…" : "Run Optimization"}
+            </button>
           </Card>
 
+          {/* Right Side */}
           <div className="space-y-6">
-            <Card>
+            <Card className="p-5 md:p-6">
               <div className="flex items-center justify-between gap-4">
                 <div>
-                  <div className="text-sm font-semibold">Demand Forecast by Zone</div>
-                  <div className="text-xs text-white/55">Predicted evac demand generated by trained ML model.</div>
+                  <div className="text-lg font-semibold">Demand Forecast</div>
+                  <div className="text-xs text-white/55 mt-1">
+                    Predicted evacuation demand per zone.
+                  </div>
                 </div>
                 <div className="text-xs text-white/55">
-                  Total Demand: <span className="text-white/80 font-semibold">{loading ? "…" : totalDemand}</span>
+                  Total: <span className="text-white/80 font-semibold">{loading ? "…" : totalDemand}</span>
                 </div>
               </div>
 
-              <div className="mt-4 grid md:grid-cols-2 gap-3">
+              <div className="mt-4 grid sm:grid-cols-2 lg:grid-cols-2 xl:grid-cols-3 gap-3">
                 {(demand || []).map((d) => (
-                  <div key={d.zone_id} className="bg-black/20 border border-white/10 rounded-2xl p-4">
-                    <div className="flex items-center justify-between">
-                      <div className="font-medium">{d.zone_name}</div>
+                  <div key={d.zone_id} className="bg-black/25 border border-white/10 rounded-2xl p-4">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="font-medium truncate">{d.zone_name}</div>
                       <div className="text-sm font-semibold text-cyan-200">{d.demand}</div>
                     </div>
-                    <div className="mt-2 text-xs text-white/55">
+                    <div className="mt-2 text-xs text-white/50">
                       Zone ID: <span className="text-white/75">{d.zone_id}</span>
                     </div>
                   </div>
                 ))}
               </div>
+
+              {!loading && demand.length === 0 && (
+                <div className="mt-4 rounded-2xl bg-white/5 border border-white/10 p-5 text-sm text-white/60">
+                  No demand results yet. Adjust scenario or click Run Optimization.
+                </div>
+              )}
             </Card>
 
-            <Card>
-              <div className="flex items-center justify-between gap-4">
-                <div>
-                  <div className="text-sm font-semibold">Recommended Allocation</div>
-                  <div className="text-xs text-white/55">Allocation computed on backend with capacity constraints.</div>
-                </div>
-                <div className="text-xs text-white/55">
-                  Assigned: <span className="text-white/80 font-semibold">{loading ? "…" : totalAssigned}</span>
+            <Card className="p-0 overflow-hidden">
+              <div className="px-5 md:px-6 py-4 border-b border-white/10 bg-black/25">
+                <div className="flex items-center justify-between gap-4">
+                  <div>
+                    <div className="text-lg font-semibold">Recommended Allocation</div>
+                    <div className="text-xs text-white/55 mt-1">
+                      Allocation under capacity and travel constraints.
+                    </div>
+                  </div>
+                  <div className="text-xs text-white/55">
+                    Assigned:{" "}
+                    <span className="text-white/80 font-semibold">{loading ? "…" : totalAssigned}</span>
+                  </div>
                 </div>
               </div>
 
-              <div className="mt-4 overflow-auto">
+              <div className="p-3 md:p-4 overflow-auto">
                 <table className="w-full text-sm">
                   <thead className="text-white/60">
                     <tr className="border-b border-white/10">
@@ -433,7 +536,10 @@ export default function Optimizer() {
                   </thead>
                   <tbody>
                     {(allocation?.assigned || []).slice(0, 18).map((a, idx) => (
-                      <tr key={`${a.zone_id || a.zone_name}-${a.shelter_id || a.shelter_name}-${idx}`} className="border-b border-white/5">
+                      <tr
+                        key={`${a.zone_id}-${a.shelter_id}-${idx}`}
+                        className="border-b border-white/5 hover:bg-white/5 transition"
+                      >
                         <td className="py-2 pr-3">{a.zone_name}</td>
                         <td className="py-2 pr-3">{a.shelter_name}</td>
                         <td className="py-2 pr-3 text-right font-semibold">{a.people}</td>
@@ -443,23 +549,13 @@ export default function Optimizer() {
                     ))}
                   </tbody>
                 </table>
-              </div>
 
-              {(allocation?.unserved || []).length > 0 && (
-                <div className="mt-4 bg-amber-500/10 border border-amber-400/20 rounded-2xl p-4">
-                  <div className="text-sm font-semibold text-amber-200">Unserved Zones</div>
-                  <div className="mt-2 grid md:grid-cols-2 gap-2 text-sm">
-                    {allocation.unserved.map((u) => (
-                      <div key={u.zone_id} className="bg-black/20 border border-white/10 rounded-xl px-3 py-2 flex items-center justify-between">
-                        <span className="text-white/80">{u.zone_name}</span>
-                        <span className="text-amber-200 font-semibold">{u.demand}</span>
-                      </div>
-                    ))}
+                {!loading && (!allocation?.assigned || allocation.assigned.length === 0) && (
+                  <div className="mt-3 rounded-2xl bg-white/5 border border-white/10 p-5 text-sm text-white/60">
+                    No allocation rows yet. Run the optimizer to generate results.
                   </div>
-                </div>
-              )}
-
-              <div className="mt-4 text-xs text-white/50">Next upgrade: min-cost flow (exact) + routing engine (OSRM) for travel times.</div>
+                )}
+              </div>
             </Card>
           </div>
         </div>

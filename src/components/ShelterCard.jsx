@@ -9,8 +9,10 @@ function badge(risk) {
 
 export default function ShelterCard({ shelter, active, onSelect, onReport }) {
   const { Icon, text, cls } = badge(shelter.risk);
-  const pct = Math.round((shelter.capacityUsed / shelter.capacityTotal) * 100);
-  const available = shelter.capacityUsed < shelter.capacityTotal;
+  const total = Math.max(0, Number(shelter.capacityTotal || 0));
+  const used = Math.max(0, Number(shelter.capacityUsed || 0));
+  const pct = total > 0 ? Math.round((used / total) * 100) : 0;
+  const available = used < total;
 
   return (
     <motion.div
@@ -24,7 +26,16 @@ export default function ShelterCard({ shelter, active, onSelect, onReport }) {
         <div>
           <div className="font-semibold">{shelter.name}</div>
           <div className="text-xs text-white/55">{shelter.type} • ID: {shelter.id}</div>
+
+          {/* ✅ show recommend info if present */}
+          {(shelter.distKm != null || shelter.timeMin != null) && (
+            <div className="text-xs text-white/55 mt-1">
+              {shelter.timeMin != null ? `ETA: ${shelter.timeMin} min` : ""}{" "}
+              {shelter.distKm != null ? `• ${shelter.distKm} km` : ""}
+            </div>
+          )}
         </div>
+
         <div className={`px-2.5 py-1 rounded-full border text-xs flex items-center gap-1 ${cls}`}>
           <Icon size={14} />
           {text}
@@ -34,7 +45,9 @@ export default function ShelterCard({ shelter, active, onSelect, onReport }) {
       <div className="mt-3">
         <div className="flex justify-between text-xs text-white/60 mb-2">
           <span>Occupancy</span>
-          <span>{shelter.capacityUsed}/{shelter.capacityTotal} ({pct}%)</span>
+          <span>
+            {used}/{total} ({pct}%)
+          </span>
         </div>
         <div className="w-full h-2 rounded-full bg-black/30 overflow-hidden">
           <div className="h-2 rounded-full bg-cyan-400/70" style={{ width: `${Math.min(100, pct)}%` }} />
@@ -45,9 +58,9 @@ export default function ShelterCard({ shelter, active, onSelect, onReport }) {
       </div>
 
       <div className="mt-3 flex items-center gap-3 text-xs text-white/70">
-        {shelter.resources.water && <span className="flex items-center gap-1"><Droplets size={14}/> Water</span>}
-        {shelter.resources.food && <span className="flex items-center gap-1"><Utensils size={14}/> Food</span>}
-        {shelter.resources.medical && <span className="flex items-center gap-1"><Cross size={14}/> Medical</span>}
+        {shelter.resources?.water && <span className="flex items-center gap-1"><Droplets size={14}/> Water</span>}
+        {shelter.resources?.food && <span className="flex items-center gap-1"><Utensils size={14}/> Food</span>}
+        {shelter.resources?.medical && <span className="flex items-center gap-1"><Cross size={14}/> Medical</span>}
       </div>
 
       <div className="mt-4 flex items-center gap-2">
